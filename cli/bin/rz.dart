@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:async/async.dart';
 import 'package:dart_console/dart_console.dart';
 import 'package:zmodem/zmodem.dart';
 
@@ -21,7 +22,8 @@ void main() async {
 }
 
 Future<void> rz() async {
-  final zcore = ZModemCore(isSending: false);
+  final zcore = ZModemCore();
+  zcore.initiateReceive();
 
   if (zcore.hasDataToSend) {
     stdout.add(zcore.dataToSend());
@@ -33,15 +35,18 @@ Future<void> rz() async {
   // The local file corresponding to the file currently being received.
   IOSink? fileSink;
 
-  await for (final event in stdin) {
-    for (final event in zcore.receive(event as Uint8List)) {
+  final input = StreamQueue(stdin);
+
+  while (true) {
+    final chunk = await input.next as Uint8List;
+    for (final event in zcore.receive(chunk)) {
       if (event is ZFileOfferedEvent) {
         zcore.acceptFile();
         fileInfo = event.fileInfo;
         fileSink = File(fileInfo.pathname).openWrite();
       } else if (event is ZFileDataEvent) {
         fileSink!.add(event.data);
-      } else if (event is ZFileReceivedEvent) {
+      } else if (event is ZFileEndEvent) {
         await fileSink!.close();
         fileSink = null;
         fileInfo = null;
@@ -55,8 +60,15 @@ Future<void> rz() async {
       stdout.add(zcore.dataToSend());
     }
     if (zcore.isFinished) {
+      // reads the OO (over and out)
+      await input.next.timeout(
+        Duration(milliseconds: 100),
+        onTimeout: () => [],
+      );
+      await input.cancel();
       break;
     }
   }
+
   await stdout.flush();
 }
